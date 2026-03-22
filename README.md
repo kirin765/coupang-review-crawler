@@ -1,2 +1,0 @@
-# coupang-review-crawler
-hi
