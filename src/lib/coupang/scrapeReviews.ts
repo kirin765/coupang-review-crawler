@@ -2,6 +2,7 @@ import { chromium, type Browser, type Page } from "playwright";
 import { CoupangReview } from "./types";
 
 const REVIEWS_PER_PAGE = 5;
+const CDP_ENDPOINT = process.env.CHROME_CDP_URL || "http://127.0.0.1:9222";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
@@ -133,54 +134,62 @@ async function fetchReviewPageViaXHR(
 }
 
 /**
- * Playwright 브라우저를 실행한다.
+ * 브라우저 연결 전략:
  *
- * 쿠팡은 Akamai Bot Manager를 사용하여 자동화 도구를 감지한다.
- * - headless Chromium: 차단됨
- * - headless system Chrome: 차단됨
- * - headed system Chrome: 통과
+ * 1순위: CDP — 사용자가 이미 열어놓은 Chrome에 연결 (Akamai 우회 보장)
+ *   사용법: Chrome을 아래 플래그로 실행
+ *   /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9222
  *
- * 따라서 시스템에 설치된 Chrome을 headed 모드로 실행한다.
- * macOS에서는 Chrome 창이 잠깐 열렸다 닫힌다.
- * 서버 환경에서는 Xvfb를 사용하거나, 프록시/쿠키 방식을 고려해야 한다.
+ * 2순위: system Chrome headed — Playwright가 새 Chrome을 headed로 실행
+ * 3순위: headless Chromium — 차단될 가능성 높음
  */
-async function launchBrowser(): Promise<Browser> {
-  // 1순위: system Chrome (headed) — Akamai 우회 가능
+async function connectBrowser(): Promise<{ browser: Browser; ownsBrowser: boolean }> {
+  // 1순위: CDP 연결 시도
   try {
-    return await chromium.launch({
+    const browser = await chromium.connectOverCDP(CDP_ENDPOINT);
+    console.log("[browser] CDP 연결 성공:", CDP_ENDPOINT);
+    return { browser, ownsBrowser: false };
+  } catch {
+    console.log("[browser] CDP 연결 실패, Playwright launch로 전환");
+  }
+
+  // 2순위: system Chrome (headed)
+  try {
+    const browser = await chromium.launch({
       headless: false,
       channel: "chrome",
       args: [
         "--disable-blink-features=AutomationControlled",
-        "--window-position=-2000,-2000", // 화면 밖에 배치
+        "--window-position=-2000,-2000",
         "--window-size=1,1",
       ],
     });
+    console.log("[browser] system Chrome (headed) 실행 성공");
+    return { browser, ownsBrowser: true };
   } catch {
-    // system Chrome이 없는 경우
+    console.log("[browser] system Chrome 없음, headless Chromium으로 전환");
   }
 
-  // 2순위: headless Chromium (Akamai에 차단될 수 있음)
-  return chromium.launch({
+  // 3순위: headless Chromium
+  const browser = await chromium.launch({
     headless: true,
-    args: [
-      "--disable-blink-features=AutomationControlled",
-      "--no-sandbox",
-    ],
+    args: ["--disable-blink-features=AutomationControlled", "--no-sandbox"],
   });
+  console.log("[browser] headless Chromium 실행 (Akamai 차단 가능성 있음)");
+  return { browser, ownsBrowser: true };
 }
 
 /**
  * 쿠팡 상품 리뷰를 수집한다.
  *
  * 동작 흐름:
- * 1. Playwright로 상품 페이지 방문 (브라우저 세션/쿠키 자동 획득)
- * 2. 페이지 내에서 리뷰 API를 XHR로 호출 (same-origin → 쿠키 자동 포함)
- * 3. 반환된 HTML fragment에서 리뷰 데이터 파싱
- * 4. XHR 실패 시 DOM에서 직접 파싱 (fallback)
+ * 1. 브라우저 연결 (CDP > headed Chrome > headless)
+ * 2. 상품 페이지 방문 → 세션/쿠키 자동 획득
+ * 3. 리뷰 API를 XHR로 호출 (same-origin → 쿠키 자동 포함)
+ * 4. HTML fragment에서 리뷰 데이터 파싱
+ * 5. XHR 실패 시 DOM에서 직접 파싱 (fallback)
  *
  * @throws Error ACCESS_DENIED — 쿠팡이 접근을 차단한 경우
- * @throws Error PARSE_FAILED — 페이지 구조가 예상과 다른 경우
  */
 export async function scrapeCoupangReviews(params: {
   url: string;
@@ -189,13 +198,18 @@ export async function scrapeCoupangReviews(params: {
 }): Promise<CoupangReview[]> {
   const { url, productId, limit } = params;
 
-  const browser = await launchBrowser();
+  const { browser, ownsBrowser } = await connectBrowser();
 
   try {
-    const context = await browser.newContext({
-      locale: "ko-KR",
-      viewport: { width: 1280, height: 720 },
-    });
+    // CDP 연결 시 기존 context 사용, 아니면 새로 생성
+    const contexts = browser.contexts();
+    const context =
+      contexts.length > 0
+        ? contexts[0]
+        : await browser.newContext({
+            locale: "ko-KR",
+            viewport: { width: 1280, height: 720 },
+          });
 
     const page = await context.newPage();
 
@@ -215,16 +229,21 @@ export async function scrapeCoupangReviews(params: {
     // 접근 차단 감지
     const title = await page.title();
     if (title.includes("Access Denied")) {
-      throw new Error("ACCESS_DENIED: 쿠팡이 접근을 차단했습니다.");
+      throw new Error(
+        "ACCESS_DENIED: 쿠팡이 접근을 차단했습니다. Chrome을 --remote-debugging-port=9222 로 실행한 뒤 재시도하세요."
+      );
     }
 
     // 상품명 추출
     let productName: string | undefined;
     try {
-      productName =
-        (await page.textContent("h1.prod-buy-header__title"))?.trim() ??
-        (await page.getAttribute('meta[property="og:title"]', "content"))?.trim() ??
-        undefined;
+      const h1 = await page.textContent("h1");
+      if (h1?.trim()) {
+        productName = h1.trim();
+      } else {
+        const ogTitle = await page.getAttribute('meta[property="og:title"]', "content");
+        productName = ogTitle?.replace(/\s*\|.*$/, "").trim() || undefined;
+      }
     } catch {
       // 상품명 추출 실패는 무시
     }
@@ -269,7 +288,6 @@ export async function scrapeCoupangReviews(params: {
 
           review.productName = productName;
 
-          // 중복 제거
           const dedupeKey = review.reviewId
             ? `id:${review.reviewId}`
             : `combo:${review.rating}|${review.authorName}|${review.content}|${review.createdAt}`;
@@ -288,7 +306,6 @@ export async function scrapeCoupangReviews(params: {
         console.warn(`[scrapeReviews] page ${pageNum} XHR 실패: ${msg}`);
         consecutiveFailures++;
 
-        // 403이 연속 발생하면 접근 차단으로 판단
         if (msg.includes("HTTP_403") && consecutiveFailures >= 2) {
           console.warn("[scrapeReviews] 리뷰 API 접근 차단 감지");
           break;
@@ -328,9 +345,15 @@ export async function scrapeCoupangReviews(params: {
       }
     }
 
+    // CDP 연결 시 열었던 탭만 닫기
+    await page.close();
+
     console.log(`[scrapeReviews] productId=${productId}, 수집 완료: ${reviews.length}개`);
     return reviews;
   } finally {
-    await browser.close();
+    // CDP 연결이면 브라우저를 닫지 않음 (사용자 브라우저이므로)
+    if (ownsBrowser) {
+      await browser.close();
+    }
   }
 }
