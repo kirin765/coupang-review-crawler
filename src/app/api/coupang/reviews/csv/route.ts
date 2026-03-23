@@ -3,6 +3,8 @@ import { extractCoupangProductId } from "@/lib/coupang/extractProductId";
 import { scrapeCoupangReviews } from "@/lib/coupang/scrapeReviews";
 import { reviewsToCsv } from "@/lib/coupang/reviewToCsv";
 
+export const runtime = "nodejs";
+
 const DEFAULT_LIMIT = 100;
 const MAX_LIMIT = 300;
 

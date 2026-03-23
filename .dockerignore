@@ -1,0 +1,10 @@
+.git
+.gitignore
+.next
+.copilot
+.DS_Store
+node_modules
+npm-debug.log*
+README.md
+.env
+.env.*

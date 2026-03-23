@@ -2,7 +2,29 @@ import { chromium, type Browser, type Page } from "playwright";
 import { CoupangReview } from "./types";
 
 const REVIEWS_PER_PAGE = 5;
-const CDP_ENDPOINT = process.env.CHROME_CDP_URL || "http://127.0.0.1:9222";
+const DEFAULT_LOCAL_CDP_ENDPOINT = "http://127.0.0.1:9222";
+const RUNNING_ON_CLOUD_RUN = Boolean(process.env.K_SERVICE || process.env.CLOUD_RUN_JOB);
+const CDP_ENDPOINT = process.env.CHROME_CDP_URL?.trim() || (
+  RUNNING_ON_CLOUD_RUN ? undefined : DEFAULT_LOCAL_CDP_ENDPOINT
+);
+const CHROMIUM_COMMON_ARGS = [
+  "--disable-blink-features=AutomationControlled",
+  "--disable-dev-shm-usage",
+];
+const CHROMIUM_CONTAINER_ARGS = ["--no-sandbox", "--disable-setuid-sandbox"];
+
+function isTruthyEnv(value: string | undefined): boolean {
+  if (!value) {
+    return false;
+  }
+  const normalized = value.trim().toLowerCase();
+  return normalized === "1" || normalized === "true";
+}
+
+const FORCE_HEADLESS = RUNNING_ON_CLOUD_RUN || isTruthyEnv(process.env.PLAYWRIGHT_HEADLESS);
+const ACCESS_DENIED_MESSAGE = RUNNING_ON_CLOUD_RUN
+  ? "ACCESS_DENIED: 쿠팡이 접근을 차단했습니다. Cloud Run headless 환경은 차단될 수 있으므로 가능하면 CHROME_CDP_URL로 원격 Chrome/CDP 엔드포인트를 연결하세요."
+  : "ACCESS_DENIED: 쿠팡이 접근을 차단했습니다. Chrome을 --remote-debugging-port=9222 로 실행한 뒤 재시도하세요.";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
@@ -136,46 +158,50 @@ async function fetchReviewPageViaXHR(
 /**
  * 브라우저 연결 전략:
  *
- * 1순위: CDP — 사용자가 이미 열어놓은 Chrome에 연결 (Akamai 우회 보장)
- *   사용법: Chrome을 아래 플래그로 실행
- *   /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9222
+ * 1순위: CDP — 사용자가 이미 열어놓은 Chrome 또는 원격 Chrome에 연결 (Akamai 우회 보장)
+ *   로컬 기본값: http://127.0.0.1:9222
+ *   Cloud Run에서는 CHROME_CDP_URL이 명시된 경우에만 시도
  *
- * 2순위: system Chrome headed — Playwright가 새 Chrome을 headed로 실행
- * 3순위: headless Chromium — 차단될 가능성 높음
+ * 2순위: system Chrome headed — 로컬 개발 환경에서만 시도
+ * 3순위: headless Chromium — Cloud Run 기본값, 차단될 가능성 높음
  */
 async function connectBrowser(): Promise<{ browser: Browser; ownsBrowser: boolean }> {
   // 1순위: CDP 연결 시도
-  try {
-    const browser = await chromium.connectOverCDP(CDP_ENDPOINT);
-    console.log("[browser] CDP 연결 성공:", CDP_ENDPOINT);
-    return { browser, ownsBrowser: false };
-  } catch {
-    console.log("[browser] CDP 연결 실패, Playwright launch로 전환");
+  if (CDP_ENDPOINT) {
+    try {
+      const browser = await chromium.connectOverCDP(CDP_ENDPOINT);
+      console.log("[browser] CDP 연결 성공:", CDP_ENDPOINT);
+      return { browser, ownsBrowser: false };
+    } catch {
+      console.log("[browser] CDP 연결 실패, Playwright launch로 전환");
+    }
   }
 
   // 2순위: system Chrome (headed)
-  try {
-    const browser = await chromium.launch({
-      headless: false,
-      channel: "chrome",
-      args: [
-        "--disable-blink-features=AutomationControlled",
-        "--window-position=-2000,-2000",
-        "--window-size=1,1",
-      ],
-    });
-    console.log("[browser] system Chrome (headed) 실행 성공");
-    return { browser, ownsBrowser: true };
-  } catch {
-    console.log("[browser] system Chrome 없음, headless Chromium으로 전환");
+  if (!FORCE_HEADLESS) {
+    try {
+      const browser = await chromium.launch({
+        headless: false,
+        channel: "chrome",
+        args: [...CHROMIUM_COMMON_ARGS, "--window-position=-2000,-2000", "--window-size=1,1"],
+      });
+      console.log("[browser] system Chrome (headed) 실행 성공");
+      return { browser, ownsBrowser: true };
+    } catch {
+      console.log("[browser] system Chrome 없음 또는 실행 실패, headless Chromium으로 전환");
+    }
   }
 
   // 3순위: headless Chromium
   const browser = await chromium.launch({
     headless: true,
-    args: ["--disable-blink-features=AutomationControlled", "--no-sandbox"],
+    args: [...CHROMIUM_COMMON_ARGS, ...CHROMIUM_CONTAINER_ARGS],
   });
-  console.log("[browser] headless Chromium 실행 (Akamai 차단 가능성 있음)");
+  console.log(
+    FORCE_HEADLESS
+      ? "[browser] headless Chromium 실행 (Cloud Run/헤드리스 환경)"
+      : "[browser] headless Chromium 실행 (Akamai 차단 가능성 있음)"
+  );
   return { browser, ownsBrowser: true };
 }
 
@@ -229,9 +255,7 @@ export async function scrapeCoupangReviews(params: {
     // 접근 차단 감지
     const title = await page.title();
     if (title.includes("Access Denied")) {
-      throw new Error(
-        "ACCESS_DENIED: 쿠팡이 접근을 차단했습니다. Chrome을 --remote-debugging-port=9222 로 실행한 뒤 재시도하세요."
-      );
+      throw new Error(ACCESS_DENIED_MESSAGE);
     }
 
     // 상품명 추출
