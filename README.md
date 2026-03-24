@@ -41,6 +41,37 @@ npm run dev
 # http://localhost:3000
 ```
 
+프로덕션 서버에서는 다음처럼 실행할 수 있습니다.
+
+```bash
+npm install
+npx playwright install chromium
+npm run build
+PORT=3000 npm run start
+```
+
+이제 `npm run start`는 기본적으로 다음 순서로 동작합니다.
+
+- `CHROME_CDP_URL`이 지정되어 있으면 그 CDP에 연결
+- 지정되어 있지 않으면 프로젝트가 같은 서버에서 로컬 Chromium CDP를 자동으로 기동
+- 그 다음 Next.js 서버를 시작
+
+즉, 별도 설정이 없다면 프로젝트가 알아서 `127.0.0.1:9222` CDP를 올립니다.
+
+배포 서버에서 같은 호스트의 CDP를 함께 사용할 계획이라면 아래처럼 그대로 실행하면 됩니다.
+
+```bash
+npm install
+npx playwright install chromium
+npm run build
+PORT=3000 npm run start
+```
+
+이 동작을 강제로 제어하고 싶다면:
+
+- `START_LOCAL_CDP=true` : 항상 로컬 CDP 기동
+- `START_LOCAL_CDP=false` : 로컬 CDP 자동 기동 비활성화
+
 ## Cloud Run 배포
 
 이 저장소는 루트 `Dockerfile` 기준으로 Google Cloud Run에 바로 배포할 수 있습니다.
@@ -79,9 +110,49 @@ gcloud run deploy coupang-review-crawler \
 
 - `CHROME_CDP_URL` (선택): 원격 Chrome/CDP 엔드포인트. 쿠팡 차단을 줄이려면 가장 효과적입니다.
 - `PLAYWRIGHT_HEADLESS` (선택): Cloud Run에서는 자동으로 headless 모드가 강제됩니다.
+- `ALLOWED_ORIGINS` (선택): CORS 허용 Origin 목록. 쉼표로 구분합니다. 기본값은 `https://reviewboost.co.kr,https://www.reviewboost.co.kr` 입니다.
+- `START_LOCAL_CDP` (선택): 비어 있으면 `CHROME_CDP_URL` 미설정 시 자동으로 로컬 CDP를 띄웁니다. `true`면 강제 활성화, `false`면 비활성화합니다.
+- `CDP_PORT` (선택): 로컬 CDP 포트. 기본값은 `9222` 입니다.
+- `CDP_USER_DATA_DIR` (선택): 로컬 CDP 프로필 경로. 기본값은 `/tmp/chrome-cdp-profile` 입니다.
+- `LOCAL_CDP_HEADLESS` (선택): `1` 또는 `true`면 로컬 CDP Chromium을 headless로 실행합니다. 기본값은 `true` 입니다.
 
 > Cloud Run 단독 headless Chromium은 쿠팡 차단 정책에 걸릴 수 있습니다.
 > 안정성이 중요하면 `CHROME_CDP_URL`로 별도 Chrome/CDP 엔드포인트를 연결하세요.
+
+## 같은 서버에서 CDP 운영
+
+일반적인 Linux 서버 배포에서는 별도 설정이 없으면 애플리케이션이 `http://127.0.0.1:9222` CDP를 먼저 시도합니다.
+
+### 1) 앱이 직접 로컬 CDP를 띄우는 방식
+
+```bash
+ALLOWED_ORIGINS=https://reviewboost.co.kr,https://www.reviewboost.co.kr \
+PORT=3000 \
+npm run start
+```
+
+### 2) CDP를 별도 프로세스로 띄우는 방식
+
+이미 서버에서 Chrome/Chromium을 CDP 모드로 올려둘 계획이라면 앱은 그대로 `npm run start`만 실행해도 됩니다.
+필요하면 아래처럼 명시적으로 URL을 지정할 수 있습니다.
+
+```bash
+CHROME_CDP_URL=http://127.0.0.1:9222 \
+ALLOWED_ORIGINS=https://reviewboost.co.kr,https://www.reviewboost.co.kr \
+PORT=3000 \
+npm run start
+```
+
+### Docker 컨테이너에서 같은 서버 CDP 사용
+
+현재 `Dockerfile`은 `node scripts/start-with-local-cdp.mjs`로 시작합니다.
+기본 동작은 `CHROME_CDP_URL`이 없으면 같은 컨테이너 안에서 Chromium CDP를 함께 띄우는 것입니다.
+
+```bash
+docker run --rm -p 8080:8080 \
+  -e ALLOWED_ORIGINS=https://reviewboost.co.kr,https://www.reviewboost.co.kr \
+  coupang-review-crawler
+```
 
 ## API 사용법
 
@@ -100,6 +171,42 @@ curl -X POST http://localhost:3000/api/coupang/reviews/csv \
 curl "http://localhost:3000/api/coupang/reviews/csv?url=https://www.coupang.com/vp/products/175895807&limit=50" \
   -o reviews.csv
 ```
+
+### `reviewboost.co.kr` 프런트엔드에서 다운로드
+
+브라우저 `fetch`로 직접 호출하려면 서버가 `https://reviewboost.co.kr` Origin을 허용해야 합니다.
+이 저장소는 기본적으로 `https://reviewboost.co.kr`와 `https://www.reviewboost.co.kr`를 CORS 허용 목록에 포함합니다.
+
+```ts
+const response = await fetch("https://YOUR-SERVER/api/coupang/reviews/csv", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({
+    url: "https://www.coupang.com/vp/products/175895807",
+    limit: 50,
+  }),
+});
+
+if (!response.ok) {
+  throw new Error("CSV 다운로드 실패");
+}
+
+const blob = await response.blob();
+const disposition = response.headers.get("Content-Disposition");
+const filenameMatch = disposition?.match(/filename="([^"]+)"/);
+const filename = filenameMatch?.[1] ?? "reviews.csv";
+
+const downloadUrl = URL.createObjectURL(blob);
+const anchor = document.createElement("a");
+anchor.href = downloadUrl;
+anchor.download = filename;
+anchor.click();
+URL.revokeObjectURL(downloadUrl);
+```
+
+서버를 다른 도메인 조합으로 운영한다면 `ALLOWED_ORIGINS` 환경 변수에 Vercel Origin을 추가하세요.
 
 ### 파라미터
 

@@ -35,7 +35,8 @@ RUN npm ci --omit=dev \
 
 COPY --from=builder /app/.next ./.next
 COPY --from=builder /app/next.config.ts ./next.config.ts
+COPY --from=builder /app/scripts ./scripts
 
 EXPOSE 8080
 
-CMD ["sh", "-c", "npm run start -- --hostname 0.0.0.0 --port ${PORT:-8080}"]
+CMD ["node", "scripts/start-with-local-cdp.mjs"]
