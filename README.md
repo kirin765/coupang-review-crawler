@@ -57,6 +57,7 @@ PORT=3000 npm run start
 - 그 다음 Next.js 서버를 시작
 
 즉, 별도 설정이 없다면 프로젝트가 알아서 `127.0.0.1:9222` CDP를 올립니다.
+서버에 화면이 없으면 `Xvfb`를 같이 띄워서 headed Chromium으로 실행합니다.
 
 배포 서버에서 같은 호스트의 CDP를 함께 사용할 계획이라면 아래처럼 그대로 실행하면 됩니다.
 
@@ -114,7 +115,9 @@ gcloud run deploy coupang-review-crawler \
 - `START_LOCAL_CDP` (선택): 비어 있으면 `CHROME_CDP_URL` 미설정 시 자동으로 로컬 CDP를 띄웁니다. `true`면 강제 활성화, `false`면 비활성화합니다.
 - `CDP_PORT` (선택): 로컬 CDP 포트. 기본값은 `9222` 입니다.
 - `CDP_USER_DATA_DIR` (선택): 로컬 CDP 프로필 경로. 기본값은 `/tmp/chrome-cdp-profile` 입니다.
-- `LOCAL_CDP_HEADLESS` (선택): `1` 또는 `true`면 로컬 CDP Chromium을 headless로 실행합니다. 기본값은 `true` 입니다.
+- `LOCAL_CDP_HEADLESS` (선택): `1` 또는 `true`면 로컬 CDP Chromium을 headless로 실행합니다. 기본값은 `false` 입니다.
+- `XVFB_DISPLAY` (선택): headed Chromium용 가상 디스플레이. 기본값은 `:99` 입니다.
+- `XVFB_SCREEN` (선택): Xvfb 스크린 크기/색심도. 기본값은 `1280x720x24` 입니다.
 
 > Cloud Run 단독 headless Chromium은 쿠팡 차단 정책에 걸릴 수 있습니다.
 > 안정성이 중요하면 `CHROME_CDP_URL`로 별도 Chrome/CDP 엔드포인트를 연결하세요.

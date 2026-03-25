@@ -7,6 +7,8 @@ const DEFAULT_CDP_PORT = "9222";
 const DEFAULT_CDP_HOST = "127.0.0.1";
 const DEFAULT_CDP_USER_DATA_DIR = "/tmp/chrome-cdp-profile";
 const DEFAULT_APP_PORT = "8080";
+const DEFAULT_XVFB_DISPLAY = ":99";
+const DEFAULT_XVFB_SCREEN = "1280x720x24";
 
 function isTruthyEnv(value) {
   if (!value) {
@@ -34,7 +36,16 @@ async function waitForCdpReady(endpoint) {
   throw new Error(`CDP endpoint did not become ready: ${endpoint}`);
 }
 
-function createCdpArgs() {
+function shouldUseHeadlessLocalCdp() {
+  const configured = process.env.LOCAL_CDP_HEADLESS?.trim();
+  if (configured) {
+    return isTruthyEnv(configured);
+  }
+
+  return false;
+}
+
+function createCdpArgs(headless) {
   const port = process.env.CDP_PORT?.trim() || DEFAULT_CDP_PORT;
   const userDataDir = process.env.CDP_USER_DATA_DIR?.trim() || DEFAULT_CDP_USER_DATA_DIR;
   const args = [
@@ -45,9 +56,10 @@ function createCdpArgs() {
     "--disable-blink-features=AutomationControlled",
     "--no-first-run",
     "--no-default-browser-check",
+    "--window-size=1280,720",
   ];
 
-  if (isTruthyEnv(process.env.LOCAL_CDP_HEADLESS ?? "true")) {
+  if (headless) {
     args.push("--headless=new");
   }
 
@@ -74,12 +86,23 @@ function shouldLaunchLocalCdp() {
   return !process.env.CHROME_CDP_URL?.trim();
 }
 
+function shouldLaunchXvfb(headless) {
+  if (headless) {
+    return false;
+  }
+
+  return !process.env.DISPLAY?.trim();
+}
+
 async function main() {
   const cdpPort = process.env.CDP_PORT?.trim() || DEFAULT_CDP_PORT;
   const cdpUrl = process.env.CHROME_CDP_URL?.trim() || `http://${DEFAULT_CDP_HOST}:${cdpPort}`;
   const launchLocalCdp = shouldLaunchLocalCdp();
+  const useHeadlessLocalCdp = shouldUseHeadlessLocalCdp();
   let chromeProcess = null;
   let nextProcess = null;
+  let xvfbProcess = null;
+  let display = process.env.DISPLAY?.trim() || "";
 
   const shutdown = (signal = "SIGTERM") => {
     if (nextProcess && nextProcess.exitCode === null) {
@@ -89,12 +112,41 @@ async function main() {
     if (chromeProcess && chromeProcess.exitCode === null) {
       chromeProcess.kill(signal);
     }
+
+    if (xvfbProcess && xvfbProcess.exitCode === null) {
+      xvfbProcess.kill(signal);
+    }
   };
 
   if (launchLocalCdp) {
+    if (shouldLaunchXvfb(useHeadlessLocalCdp)) {
+      display = process.env.XVFB_DISPLAY?.trim() || DEFAULT_XVFB_DISPLAY;
+      const screen = process.env.XVFB_SCREEN?.trim() || DEFAULT_XVFB_SCREEN;
+
+      console.log(`[startup] launching Xvfb on ${display} (${screen})`);
+      xvfbProcess = spawnManagedProcess(
+        "Xvfb",
+        [display, "-screen", "0", screen, "-ac", "-nolisten", "tcp"],
+        {
+          ...process.env,
+        }
+      );
+
+      xvfbProcess.on("exit", (code, signal) => {
+        if (signal || code !== 0) {
+          console.error(`[startup] Xvfb exited early (code=${code}, signal=${signal})`);
+        }
+      });
+
+      await sleep(1000);
+    }
+
     console.log(`[startup] launching local CDP browser at ${cdpUrl}`);
 
-    chromeProcess = spawnManagedProcess(chromium.executablePath(), createCdpArgs(), process.env);
+    chromeProcess = spawnManagedProcess(chromium.executablePath(), createCdpArgs(useHeadlessLocalCdp), {
+      ...process.env,
+      ...(display ? { DISPLAY: display } : {}),
+    });
     chromeProcess.on("exit", (code, signal) => {
       if (signal || code !== 0) {
         console.error(`[startup] local CDP browser exited early (code=${code}, signal=${signal})`);
@@ -117,6 +169,7 @@ async function main() {
     CHROME_CDP_URL: cdpUrl,
     PORT: nextPort,
     HOSTNAME: process.env.HOSTNAME?.trim() || "0.0.0.0",
+    ...(display ? { DISPLAY: display } : {}),
   };
 
   nextProcess = spawnManagedProcess(

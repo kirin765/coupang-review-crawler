@@ -29,6 +29,8 @@ WORKDIR /app
 
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev \
+    && apt-get update \
+    && apt-get install -y xvfb \
     && npx playwright install --with-deps chromium \
     && npm cache clean --force \
     && rm -rf /var/lib/apt/lists/*
