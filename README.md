@@ -1,6 +1,6 @@
-# 쿠팡 리뷰 크롤러
+# 리뷰 크롤러 API (쿠팡 / 네이버 스마트스토어)
 
-쿠팡 상품 리뷰를 수집하여 CSV로 반환하는 Next.js API 서버.
+쿠팡 또는 네이버 스마트스토어 상품 리뷰를 수집하여 CSV로 반환하는 Next.js API 서버.
 
 ## 사전 준비
 
@@ -15,7 +15,7 @@ npx playwright install chromium
 
 ## Chrome CDP 모드 실행
 
-쿠팡은 Akamai Bot Manager로 자동화 도구를 차단합니다.
+쿠팡/네이버는 자동화 트래픽을 차단할 수 있습니다.
 이를 우회하기 위해 Chrome을 원격 디버깅 모드로 실행해야 합니다.
 
 ```bash
@@ -109,7 +109,7 @@ gcloud run deploy coupang-review-crawler \
 
 ### Cloud Run 환경 변수
 
-- `CHROME_CDP_URL` (선택): 원격 Chrome/CDP 엔드포인트. 쿠팡 차단을 줄이려면 가장 효과적입니다.
+- `CHROME_CDP_URL` (선택): 원격 Chrome/CDP 엔드포인트. 쿠팡/네이버 차단을 줄이려면 가장 효과적입니다.
 - `PLAYWRIGHT_HEADLESS` (선택): Cloud Run에서는 자동으로 headless 모드가 강제됩니다.
 - `ALLOWED_ORIGINS` (선택): CORS 허용 Origin 목록. 쉼표로 구분합니다. 기본값은 `https://reviewboost.co.kr,https://www.reviewboost.co.kr` 입니다.
 - `START_LOCAL_CDP` (선택): 비어 있으면 `CHROME_CDP_URL` 미설정 시 자동으로 로컬 CDP를 띄웁니다. `true`면 강제 활성화, `false`면 비활성화합니다.
@@ -119,7 +119,7 @@ gcloud run deploy coupang-review-crawler \
 - `XVFB_DISPLAY` (선택): headed Chromium용 가상 디스플레이. 기본값은 `:99` 입니다.
 - `XVFB_SCREEN` (선택): Xvfb 스크린 크기/색심도. 기본값은 `1280x720x24` 입니다.
 
-> Cloud Run 단독 headless Chromium은 쿠팡 차단 정책에 걸릴 수 있습니다.
+> Cloud Run 단독 headless Chromium은 쿠팡/네이버 차단 정책에 걸릴 수 있습니다.
 > 안정성이 중요하면 `CHROME_CDP_URL`로 별도 Chrome/CDP 엔드포인트를 연결하세요.
 
 ## 같은 서버에서 CDP 운영
@@ -161,6 +161,10 @@ docker run --rm -p 8080:8080 \
 
 ### POST /api/coupang/reviews/csv
 
+이 엔드포인트는 전달된 `url`을 보고 자동으로 마켓플레이스를 판별합니다.
+
+쿠팡 URL이면 쿠팡 리뷰를, `naver`가 포함된 네이버 스마트스토어 URL이면 네이버 리뷰를 수집합니다.
+
 ```bash
 curl -X POST http://localhost:3000/api/coupang/reviews/csv \
   -H "Content-Type: application/json" \
@@ -174,6 +178,25 @@ curl -X POST http://localhost:3000/api/coupang/reviews/csv \
 curl "http://localhost:3000/api/coupang/reviews/csv?url=https://www.coupang.com/vp/products/175895807&limit=50" \
   -o reviews.csv
 ```
+
+네이버 스마트스토어 URL 예시:
+
+```bash
+curl -X POST http://localhost:3000/api/coupang/reviews/csv \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://brand.naver.com/lottewellfoodmall/products/13242965454", "limit": 50}' \
+  -o naver-reviews.csv
+```
+
+```bash
+curl "http://localhost:3000/api/coupang/reviews/csv?url=https://brand.naver.com/lottewellfoodmall/products/13242965454&limit=50" \
+  -o naver-reviews.csv
+```
+
+네이버 스마트스토어 지원 URL 예시:
+
+- `https://brand.naver.com/<store>/products/<productId>`
+- `https://smartstore.naver.com/<store>/products/<productId>`
 
 ### `reviewboost.co.kr` 프런트엔드에서 다운로드
 
@@ -215,7 +238,7 @@ URL.revokeObjectURL(downloadUrl);
 
 | 파라미터 | 필수 | 설명 | 기본값 |
 |---------|------|------|--------|
-| `url` | O | 쿠팡 상품 URL | - |
+| `url` | O | 쿠팡/네이버 상품 URL | - |
 | `limit` | X | 수집할 리뷰 수 (1~300) | 100 |
 
 ### CSV 컬럼
@@ -244,6 +267,6 @@ URL.revokeObjectURL(downloadUrl);
 ## 트러블슈팅
 
 - **Access Denied 오류**: Chrome이 CDP 모드로 실행 중인지 확인하세요.
-- **리뷰 0개 수집**: 리뷰 API가 403을 반환하는 경우입니다. CDP Chrome에서 쿠팡에 한 번 접속한 뒤 재시도하세요.
+- **리뷰 0개 수집**: 사이트 측 리뷰 API 응답이 비어 있거나 차단된 경우입니다. CDP Chrome에서 대상 사이트(쿠팡/네이버)에 한 번 접속한 뒤 재시도하세요.
 - **CDP 연결 실패**: 이미 Chrome이 실행 중이면 같은 포트를 사용할 수 없습니다. `--user-data-dir`을 별도로 지정하세요.
 - **Cloud Run에서 차단됨**: `CHROME_CDP_URL`로 외부 Chrome/CDP 엔드포인트를 연결하는 구성이 가장 안정적입니다.

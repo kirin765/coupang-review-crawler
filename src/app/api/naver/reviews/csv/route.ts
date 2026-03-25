@@ -1,10 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { extractCoupangProductId } from "@/lib/coupang/extractProductId";
-import { scrapeCoupangReviews } from "@/lib/coupang/scrapeReviews";
-import { reviewsToCsv } from "@/lib/coupang/reviewToCsv";
 import { extractNaverProductId } from "@/lib/naver/extractProductId";
 import { scrapeNaverReviews } from "@/lib/naver/scrapeReviews";
-import { reviewsToCsv as naverReviewsToCsv } from "@/lib/naver/reviewToCsv";
+import { reviewsToCsv } from "@/lib/naver/reviewToCsv";
 
 export const runtime = "nodejs";
 
@@ -69,12 +66,10 @@ function ensureOriginAllowed(origin: string | null) {
 }
 
 async function handleRequest(url: string | null, rawLimit: unknown, origin: string | null) {
-  // URL 필수 검증
   if (!url || typeof url !== "string") {
-    return errorJson("유효한 상품 URL이 아닙니다.", 400, origin);
+    return errorJson("유효한 네이버 스마트스토어 상품 URL이 아닙니다.", 400, origin);
   }
 
-  // limit 파싱
   let limit = DEFAULT_LIMIT;
   if (rawLimit !== undefined && rawLimit !== null) {
     limit = typeof rawLimit === "string" ? parseInt(rawLimit, 10) : Number(rawLimit);
@@ -83,55 +78,33 @@ async function handleRequest(url: string | null, rawLimit: unknown, origin: stri
     }
   }
 
-  const isNaverUrl = url.toLowerCase().includes("naver");
-  const naverProductId = extractNaverProductId(url);
-  const coupangProductId = extractCoupangProductId(url);
-
-  const target =
-    isNaverUrl || naverProductId
-      ? {
-          marketplace: "naver" as const,
-          productId: naverProductId,
-          scrape: scrapeNaverReviews,
-          toCsv: naverReviewsToCsv,
-          invalidMessage: "유효한 네이버 스마트스토어 상품 URL이 아닙니다.",
-          failureMessage: "네이버 스마트스토어 페이지 구조 변경 또는 접근 제한으로 인해 수집에 실패했습니다.",
-          filenamePrefix: "naver-reviews",
-        }
-      : {
-          marketplace: "coupang" as const,
-          productId: coupangProductId,
-          scrape: scrapeCoupangReviews,
-          toCsv: reviewsToCsv,
-          invalidMessage: "유효한 쿠팡 상품 URL이 아닙니다.",
-          failureMessage: "쿠팡 페이지 구조 변경 또는 접근 제한으로 인해 수집에 실패했습니다.",
-          filenamePrefix: "coupang-reviews",
-        };
-
-  if (!target.productId) {
-    return errorJson(target.invalidMessage, 400, origin);
+  const productId = extractNaverProductId(url);
+  if (!productId) {
+    return errorJson("유효한 네이버 스마트스토어 상품 URL이 아닙니다.", 400, origin);
   }
 
-  console.log(
-    `[reviews/csv] marketplace=${target.marketplace}, 요청 URL: ${url}, productId: ${target.productId}, limit: ${limit}`
-  );
+  console.log(`[naver/reviews/csv] 요청 URL: ${url}, productId: ${productId}, limit: ${limit}`);
 
   let reviews;
   try {
-    reviews = await target.scrape({ url, productId: target.productId, limit });
+    reviews = await scrapeNaverReviews({ url, productId, limit });
   } catch (err) {
-    console.error("[reviews/csv] 리뷰 수집 실패:", err);
+    console.error("[naver/reviews/csv] 리뷰 수집 실패:", err);
     const message = err instanceof Error ? err.message : "";
     if (message.includes("ACCESS_DENIED") || message.includes("PARSE_FAILED")) {
-      return errorJson(target.failureMessage, 500, origin);
+      return errorJson(
+        "네이버 스마트스토어 페이지 구조 변경 또는 접근 제한으로 인해 수집에 실패했습니다.",
+        500,
+        origin
+      );
     }
     return errorJson("리뷰 수집에 실패했습니다.", 500, origin);
   }
 
-  console.log(`[reviews/csv] 실제 수집 리뷰 수: ${reviews.length}`);
+  console.log(`[naver/reviews/csv] 실제 수집 리뷰 수: ${reviews.length}`);
 
-  const csv = target.toCsv(reviews);
-  const filename = `${target.filenamePrefix}-${target.productId}.csv`;
+  const csv = reviewsToCsv(reviews);
+  const filename = `naver-reviews-${productId}.csv`;
 
   return new NextResponse(csv, {
     status: 200,
@@ -157,7 +130,7 @@ export async function OPTIONS(request: NextRequest) {
   });
 }
 
-/** POST /api/coupang/reviews/csv */
+/** POST /api/naver/reviews/csv */
 export async function POST(request: NextRequest) {
   const origin = request.headers.get("origin");
   const rejectedResponse = ensureOriginAllowed(origin);
@@ -174,7 +147,7 @@ export async function POST(request: NextRequest) {
   }
 }
 
-/** GET /api/coupang/reviews/csv?url=...&limit=... */
+/** GET /api/naver/reviews/csv?url=...&limit=... */
 export async function GET(request: NextRequest) {
   const origin = request.headers.get("origin");
   const rejectedResponse = ensureOriginAllowed(origin);

@@ -1,4 +1,4 @@
-export const metadata = { title: "Coupang Review Crawler" };
+export const metadata = { title: "Review Crawler API" };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
